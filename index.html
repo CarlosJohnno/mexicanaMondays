@@ -976,7 +976,7 @@ async function leaveMatch(){
     // last one out turns off the lights: hide an abandoned lobby so it
     // doesn't linger in the open-matches list forever
     if(state.players.length <= 1){
-      await SB.from('matches').update({hidden_at: new Date().toISOString(), hidden_note:'lobby abandoned'}).eq('id', state.match.id).eq('status','lobby');
+      await SB.rpc('cancel_match', {p_match_id: state.match.id, p_note: 'lobby abandoned', p_only_if_status: 'lobby'});
     }
   }
   stopLive(); clearSession(); state={match:null,players:[],games:[],meId:null};
@@ -996,9 +996,11 @@ async function cancelMatch(){
     : 'Cancel this match for everyone? It will disappear as if it never happened.';
   if(!confirm(msg)) return;
   const me = state.players.find(p=>p.id===state.meId);
-  const { error } = await SB.from('matches')
-    .update({hidden_at: new Date().toISOString(), hidden_note: 'cancelled in app by '+(me?me.name:'unknown')})
-    .eq('id', state.match.id);
+  // via RPC: RLS (rightly) blocks anon from setting hidden_at directly
+  const { error } = await SB.rpc('cancel_match', {
+    p_match_id: state.match.id,
+    p_note: 'cancelled in app by '+(me?me.name:'unknown')
+  });
   if(error) return toast(error.message);
   stopLive(); clearSession(); state={match:null,players:[],games:[],meId:null};
   editingGameId=null; activeScoreGameId=null; scoreA=null; hostCourts=null;

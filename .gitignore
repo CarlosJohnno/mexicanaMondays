@@ -1,0 +1,13 @@
+# local backup files — git history is the real backup
+index_before_*.html
+*_backup*.html
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# never commit secrets, in any form
+*.env
+.env*
+*service_role*
+*secret*
