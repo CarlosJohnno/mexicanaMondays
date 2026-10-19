@@ -34,6 +34,17 @@ picks how many rounds to play. Whoever saves the last score of a round draws
 the next one; a unique index on `games(match_id, round, court)` stops two
 phones drawing it twice.
 
+## Banter
+
+Every live match card carries one line of abuse derived from the numbers
+(`banterPre` / `banterPost` in the CORE block): exact rematch records, a
+pair's record together, individual head-to-heads, streaks tonight and
+overall, and the gap in average points. History is fetched once per match
+(`loadHistoryForBanter`) and the line is seeded on the game id, so every
+phone shows the same thing. Saving a score shows the post-result line as a
+toast, and the final screen gets a closer. Templates live in those two
+functions; edit freely, keep the minimum sample sizes.
+
 ## Tests
 
 ```

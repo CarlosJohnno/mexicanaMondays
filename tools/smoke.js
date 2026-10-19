@@ -224,10 +224,19 @@ async function playUntil(page, pred, onRound) {
   await page.click('.courtchips .chip:has-text("2 courts")');
   await page.click('button:has-text("Set pairings & start")');
   await page.waitForSelector('#view-play.active');
-  let emptySeen = 0;
+  let emptySeen = 0, quips = new Set(), quipToasts = 0;
+  await page.waitForFunction(() => histData !== null);
   await playUntil(page, () => document.querySelector('#view-final.active') !== null, async p => {
     const n = await p.locator('.court.empty').count(); if (n && !emptySeen) await p.screenshot({ path: OUT + '/F1_empty_court.png' }); emptySeen += n;
+    for (const q of await p.locator('.quip').allTextContents()) quips.add(q);
+    if (await p.locator('#toast.quip-toast').count()) quipToasts++;
+    if (quips.size === 4 && !fs.existsSync(OUT + '/G1_banter.png')) await p.screenshot({ path: OUT + '/G1_banter.png' });
   });
+  assert(quips.size >= 10, 'expected banter lines on the match cards, saw ' + quips.size);
+  assert(quipToasts >= 1, 'expected a banter toast after saving a score');
+  log(`banter: ${quips.size} distinct lines shown during the night, e.g. "${[...quips][3]}"`);
+  const finalTxt = await page.textContent('#final-winner-pts'); assert(finalTxt.includes('·'), finalTxt);
+  log('final: ' + finalTxt);
   assert(emptySeen >= 1, 'odd-game night should show the empty-court card');
   log('11 players, 2 courts: the one single-game round is labelled rather than silently short');
 

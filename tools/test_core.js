@@ -127,4 +127,59 @@ if (dumpPath && fs.existsSync(dumpPath)) {
   });
 } else console.log('  (set MM_DUMP=/path/to/dump.json to run the real-data checks; skipped)');
 
+
+console.log('Banter');
+{
+  const C2 = new Function(core + '\nreturn {banterPre, banterPost, banterFacts, hashStr};')();
+  const P = ['A','B','C','D','E','F','G','H'].map((n,i)=>({ id:'s'+i, name:n, profile_id:'pr'+i, seat:i }));
+  // fake history: A&B have beaten C&D three times; G beats H every time
+  const hp = []; const hg = [];
+  const mk = (a,b,s1,s2,mid) => { const ids = [...a,...b].map(pid=>{ const id='h'+hp.length; hp.push({ id, profile_id:pid, match_id:mid }); return id; }); hg.push({ id:'g'+hg.length, match_id:mid, idx:hg.length, team1:ids.slice(0,2), team2:ids.slice(2), score1:s1, score2:s2 }); };
+  for(let i=0;i<3;i++) mk(['pr0','pr1'],['pr2','pr3'],16,8,'m'+i);
+  for(let i=0;i<5;i++) mk(['pr6','pr0'],['pr7','pr1'],14,10,'m'+i);
+  const hist = { games:hg, players:hp };
+  ok('exact rematch produces a never-beaten line, deterministic', () => {
+    const g = { id:'x1', team1:['s0','s1'], team2:['s2','s3'] };
+    const line = C2.banterPre(g, P, hist, []);
+    assert(/never beaten|3-0|3 wins from 3/.test(line), line);
+    assert.strictEqual(line, C2.banterPre(g, P, hist, []));
+    console.log('      ' + line);
+  });
+  ok('head-to-head line when no pair history', () => {
+    const g = { id:'x2', team1:['s6','s2'], team2:['s7','s3'] };
+    const line = C2.banterPre(g, P, hist, []);
+    assert(/G/.test(line), line);
+    console.log('      ' + line);
+  });
+  ok('tonight streak line and post-result line', () => {
+    const tonight = [0,1,2].map(i=>({ id:'t'+i, idx:i, team1:['s4','s'+(5+i%3)], team2:['s'+(1+i),'s0'], score1:20, score2:4 }));
+    const g = { id:'x3', idx:3, team1:['s4','s5'], team2:['s6','s7'] };
+    const pre = C2.banterPre(g, P, hist, tonight);
+    assert(pre && pre.length>10, pre);
+    console.log('      ' + pre);
+    const post = C2.banterPost({ ...g, score1:22, score2:2 }, P, hist, tonight);
+    assert(post && post.length > 10, post);
+    console.log('      ' + post);
+    assert.strictEqual(C2.banterPost({ ...g }, P, hist, tonight), null);
+  });
+  ok('no history still yields a line', () => {
+    const line = C2.banterPre({ id:'x4', team1:['s0','s1'], team2:['s2','s3'] }, P, { games:[], players:[] }, []);
+    assert(line.length > 10); console.log('      ' + line);
+  });
+  if (dumpPath && fs.existsSync(dumpPath)) {
+    ok('real data: Carl & Joe v Marie & Kirsty', () => {
+      const d = JSON.parse(fs.readFileSync(dumpPath, 'utf8'));
+      const prof = {}; d.profiles.forEach(p => prof[p[1]] = p[0]);
+      const seats = ['Carl','Joe','Marie','Kirsty','Nick','Brigg','Vicky','Tom Moore'].map((n,i)=>({ id:'q'+i, name:n, profile_id:prof[n], seat:i }));
+      const hist = { games: d.games.filter(g=>g.score1!==null), players: d.players };
+      for (const [a,b,c,dd,id] of [[0,1,2,3,'r1'],[4,5,6,7,'r2'],[0,2,1,3,'r3'],[4,7,5,6,'r4'],[1,6,4,2,'r5']]) {
+        const g = { id, team1:['q'+a,'q'+b], team2:['q'+c,'q'+dd] };
+        const pre = C2.banterPre(g, seats, hist, []);
+        const post = C2.banterPost({ ...g, score1:20, score2:4 }, seats, hist, []);
+        console.log(`      ${seats[a].name} & ${seats[b].name} v ${seats[c].name} & ${seats[dd].name}\n        pre:  ${pre}\n        post: ${post}`);
+        assert(pre && post);
+      }
+    });
+  }
+}
 console.log(`\n${passed} checks passed`);

@@ -104,6 +104,9 @@
   .row{display:flex; gap:10px;}
   .row .btn{flex:1;}
   .serves{font-size:12px; color:var(--court-text); margin-top:6px;}
+  .quip{font-size:13px; color:#fde68a; font-style:italic; margin-top:10px; padding:8px 10px; background:rgba(0,0,0,.22); border-radius:10px; line-height:1.35;}
+  .nextup .quip{color:var(--gold); background:var(--card2); text-align:left; margin-top:6px; margin-bottom:8px;}
+  #toast.quip-toast{background:var(--card2); color:var(--gold); border:1px solid var(--gold); font-style:italic;}
 
   /* ===== Bottom nav ===== */
   #bottomnav{position:fixed; bottom:0; left:0; right:0; z-index:50;
@@ -660,6 +663,129 @@ function finishingPositions(finishedMatches, allPlayers, allGames){
   });
   return out;
 }
+/* ----- Banter: one line of abuse per match card, from the numbers -----
+   Inputs are profile-keyed so a player's history follows them between
+   nights. Everything is deterministic on the game id, so every phone shows
+   the same line and it doesn't change on each refresh. */
+function hashStr(s){ let h=2166136261; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619); } return h>>>0; }
+function pick(arr, seed){ return arr[seed % arr.length]; }
+/* Build the per-profile view of history relevant to one game. hist = {games, players}
+   from finished nights; tonight = this match's scored games; players = this match's seats. */
+function banterFacts(game, players, hist, tonight){
+  const seat = {}; players.forEach(p=>seat[p.id]=p);
+  const prof = id => seat[id] ? seat[id].profile_id : null;
+  const nm = id => seat[id] ? seat[id].name : '?';
+  const t1 = game.team1.map(id=>({ id, pid:prof(id), name:nm(id) })), t2 = game.team2.map(id=>({ id, pid:prof(id), name:nm(id) }));
+  // normalise every historic game to profile ids and 24-point scale
+  const hp = {}; (hist.players||[]).forEach(p=>hp[p.id]=p.profile_id);
+  const rows = [];
+  (hist.games||[]).forEach(g=>{ if(g.score1===null||g.score1===undefined) return; const tot=g.score1+g.score2||24;
+    rows.push({ a:g.team1.map(id=>hp[id]), b:g.team2.map(id=>hp[id]), sa:g.score1*24/tot, sb:g.score2*24/tot, tonight:false, idx:-1 }); });
+  (tonight||[]).forEach(g=>{ if(g.id===game.id || g.score1===null||g.score1===undefined) return; const tot=g.score1+g.score2||24;
+    rows.push({ a:g.team1.map(prof), b:g.team2.map(prof), sa:g.score1*24/tot, sb:g.score2*24/tot, tonight:true, idx:g.idx }); });
+  const has = (side, pid) => pid && side.includes(pid);
+  const rec = (filter) => { let w=0,l=0,d=0,pf=0,pa=0; rows.forEach(r=>{ const s=filter(r); if(!s) return; const [me,them]= s==='a'?[r.sa,r.sb]:[r.sb,r.sa]; pf+=me; pa+=them; if(me>them) w++; else if(me<them) l++; else d++; }); return { g:w+l+d, w, l, d, pf, pa }; };
+  // exact rematch: these two pairs against each other
+  const exact = rec(r => (has(r.a,t1[0].pid)&&has(r.a,t1[1].pid)&&has(r.b,t2[0].pid)&&has(r.b,t2[1].pid)) ? 'a'
+                       : (has(r.b,t1[0].pid)&&has(r.b,t1[1].pid)&&has(r.a,t2[0].pid)&&has(r.a,t2[1].pid)) ? 'b' : null);
+  // each pair's record together
+  const pair = t => rec(r => (has(r.a,t[0].pid)&&has(r.a,t[1].pid)) ? 'a' : (has(r.b,t[0].pid)&&has(r.b,t[1].pid)) ? 'b' : null);
+  // individual head-to-head across the net
+  const h2h = (x, y) => rec(r => (has(r.a,x.pid)&&has(r.b,y.pid)) ? 'a' : (has(r.b,x.pid)&&has(r.a,y.pid)) ? 'b' : null);
+  // individual overall + current streak (chronological: history first, tonight by idx)
+  const indiv = x => {
+    const mine = rows.filter(r=>has(r.a,x.pid)||has(r.b,x.pid)).sort((p,q)=> (p.tonight-q.tonight) || (p.idx-q.idx));
+    const all = rec(r => has(r.a,x.pid)?'a':has(r.b,x.pid)?'b':null);
+    let streak=0, type=null;
+    for(let i=mine.length-1;i>=0;i--){ const r=mine[i]; const me=has(r.a,x.pid)?r.sa:r.sb, them=has(r.a,x.pid)?r.sb:r.sa; const t= me>them?'W':me<them?'L':'D'; if(type===null) type=t; if(t===type) streak++; else break; }
+    const tn = mine.filter(r=>r.tonight); let ts=0, tt=null;
+    for(let i=tn.length-1;i>=0;i--){ const r=tn[i]; const me=has(r.a,x.pid)?r.sa:r.sb, them=has(r.a,x.pid)?r.sb:r.sa; const t= me>them?'W':me<them?'L':'D'; if(tt===null) tt=t; if(t===tt) ts++; else break; }
+    return { ...all, avg: all.g? all.pf/all.g : 0, streak, streakType:type, tonightStreak:ts, tonightType:tt, tonightGames:tn.length };
+  };
+  return { t1, t2, exact, pair1:pair(t1), pair2:pair(t2), h2h:[[0,0],[0,1],[1,0],[1,1]].map(([i,j])=>({ x:t1[i], y:t2[j], r:h2h(t1[i],t2[j]) })), ind:[...t1,...t2].map(x=>({ ...x, s:indiv(x) })) };
+}
+const pct = (w,g) => Math.round(100*w/g);
+/* Pre-game line. Tries the juiciest fact first and works down. */
+function banterPre(game, players, hist, tonight){
+  const F = banterFacts(game, players, hist, tonight);
+  const seed = hashStr(game.id+'pre');
+  const n1 = F.t1.map(x=>x.name).join(' & '), n2 = F.t2.map(x=>x.name).join(' & ');
+  const out = [];
+  // 1. exact rematch
+  if(F.exact.g>=2){
+    const e=F.exact;
+    if(e.l===0 && e.w>=2) out.push(pick([`${n2} have never beaten ${n1}. ${e.g} tries. Maybe today. Probably not.`, `${n1} are ${e.w}-0 against this pair. ${n2}, the court is that way, and so is the exit.`], seed));
+    else if(e.w===0 && e.l>=2) out.push(pick([`${n1} have lost every one of their ${e.g} games against ${n2}. Character building, apparently.`, `${n2} own this fixture ${e.l}-0. ${n1} are here for the vibes.`], seed));
+    else out.push(`Rematch. ${n1} lead ${e.w}-${e.l}${e.d?` with ${e.d} drawn`:''}. Nobody's proud of any of it.`);
+  }
+  // 2. a pair's record together
+  const pr = (p, names) => {
+    if(p.g<3) return;
+    const w=pct(p.w,p.g);
+    if(w>=75) out.push(pick([`${names} win ${w}% of their games together. Annoying.`, `${names}: ${p.w} wins from ${p.g} as a pair. Someone check their bags for a third player.`], seed));
+    else if(w<=25) out.push(pick([`${names} have won ${p.w} of ${p.g} together. The draw hates you, and it's hard to blame it.`, `${names} as a pair: ${p.w}-${p.l}. Statistically it would be better to send one of you to the bar.`], seed));
+    else if(p.w===0) out.push(`${names} have never won a game together. ${p.g} attempts. Science says keep going.`);
+  };
+  pr(F.pair1, n1); pr(F.pair2, n2);
+  // 3. individual head-to-heads across the net (most lopsided first)
+  const lop = F.h2h.filter(h=>h.r.g>=4).map(h=>({ ...h, gap: Math.abs(h.r.w-h.r.l)/h.r.g })).sort((a,b)=>b.gap-a.gap)[0];
+  if(lop && lop.gap>=0.5){
+    const { x, y, r } = lop;
+    const [boss, chump, bw, cw] = r.w>=r.l ? [x.name, y.name, r.w, r.l] : [y.name, x.name, r.l, r.w];
+    out.push(pick([`${boss} has beaten ${chump} ${bw} times out of ${r.g}. ${chump}, this is a safe space, but it's not a safe court.`, `${chump} v ${boss}: ${cw}-${bw} lifetime. ${chump} has a nemesis and it's standing across the net.`, `${boss} owns ${chump} ${bw}-${cw}. The restraining order was never filed.`], seed));
+  }
+  // 4. streaks, tonight first
+  F.ind.forEach(x=>{
+    if(x.s.tonightStreak>=3 && x.s.tonightType==='W') out.push(pick([`${x.name} has won ${x.s.tonightStreak} in a row tonight. Someone take them out, legally.`, `${x.s.tonightStreak} straight wins for ${x.name} tonight. Does anyone actually like this person?`], seed));
+    if(x.s.tonightStreak>=3 && x.s.tonightType==='L') out.push(pick([`${x.name}: ${x.s.tonightStreak} losses on the spin tonight. Thoughts and prayers.`, `${x.name} has lost ${x.s.tonightStreak} straight tonight. The squirrel is embarrassed for you.`], seed));
+  });
+  F.ind.forEach(x=>{
+    if(x.s.streak>=5 && x.s.streakType==='W') out.push(`${x.name} is on a ${x.s.streak}-game winning streak overall. Unbearable at work, presumably.`);
+    if(x.s.streak>=5 && x.s.streakType==='L') out.push(`${x.name} hasn't won in ${x.s.streak} games. The rest of you are the problem, obviously.`);
+  });
+  // 5. quality gap
+  const q = F.ind.filter(x=>x.s.g>=10).sort((a,b)=>b.s.avg-a.s.avg);
+  if(q.length>=2 && q[0].s.avg-q[q.length-1].s.avg>=4){
+    const hi=q[0], lo=q[q.length-1];
+    out.push(pick([`${hi.name} averages ${hi.s.avg.toFixed(1)} a game. ${lo.name} averages ${lo.s.avg.toFixed(1)}. It's not a gap, it's a gorge.`, `${lo.name} is the lowest-rated player on this court by some distance. Enjoy the ride.`], seed));
+  }
+  // 6. generic
+  if(!out.length){
+    const fresh = F.ind.filter(x=>x.s.g<5);
+    if(fresh.length) out.push(`${fresh[0].name} has barely any history. The spreadsheet is watching now.`);
+    else out.push(pick([`No history between these four. Let's make some regrettable history.`, `Clean slate. Someone's about to ruin it.`, `The data has no opinion on this one. The data is lying.`], seed));
+  }
+  return pick(out.slice(0,2), seed >>> 3);   // juiciest two facts only, so the ladder means something
+}
+/* Post-result line: scoreline, streaks, head-to-head updates. */
+function banterPost(game, players, hist, tonight){
+  if(game.score1===null || game.score1===undefined) return null;
+  const F = banterFacts(game, players, hist, tonight);
+  const seed = hashStr(game.id+'post');
+  const won1 = game.score1>game.score2, draw = game.score1===game.score2;
+  const [W, L] = won1 ? [F.t1, F.t2] : [F.t2, F.t1];
+  const wn = W.map(x=>x.name).join(' & '), ln = L.map(x=>x.name).join(' & ');
+  const tot = game.score1+game.score2, margin = Math.abs(game.score1-game.score2);
+  const out = [];
+  if(draw) out.push(pick([`A draw. Nobody wanted it enough. Disgraceful.`, `${game.score1}-${game.score2}. Four people, zero winners, one squirrel wondering why it bothered.`], seed));
+  else {
+    if(margin >= tot*0.5) out.push(pick([`${game.score1}-${game.score2}. ${ln}, that wasn't a game, that was a public service announcement.`, `${wn} win by ${margin}. ${ln} are asked to leave quietly and think about what they've done.`, `${margin}-point margin. Someone fetch ${ln} a blanket.`], seed));
+    else if(margin <= 2) out.push(pick([`${wn} by ${margin}. ${ln} will be telling everyone they were robbed. They were not.`, `Tight one. ${wn} edge it, ${ln} find a new excuse.`], seed));
+    // streak-based (facts computed from games before this one; add this result on top)
+    W.forEach(x=>{ const f=F.ind.find(i=>i.id===x.id).s; const t = f.tonightType==='W' ? f.tonightStreak+1 : 1;
+      if(t>=3) out.push(pick([`${x.name} wins again. ${t} in a row tonight. Someone take them out.`, `${t} straight for ${x.name}. Starting to feel personal.`, `${x.name}, ${t} on the bounce. Nobody came here to watch you enjoy yourself.`], seed)); });
+    L.forEach(x=>{ const f=F.ind.find(i=>i.id===x.id).s; const t = f.tonightType==='L' ? f.tonightStreak+1 : 1;
+      if(t>=3) out.push(pick([`${x.name} loses again. That's ${t} tonight. Rough.`, `${t} losses in a row for ${x.name}. The sitting-out players are the lucky ones.`, `${x.name}: ${t} straight defeats. The squirrel has stopped making eye contact.`], seed)); });
+    // overall record flavour
+    W.forEach(x=>{ const f=F.ind.find(i=>i.id===x.id).s; if(f.g>=20 && pct(f.w,f.g)>=60) out.push(pick([`${x.name} wins. Again. ${pct(f.w,f.g)}% lifetime. We get it.`, `Another one for ${x.name}. Someone check the balls.`], seed)); });
+    L.forEach(x=>{ const f=F.ind.find(i=>i.id===x.id).s; if(f.g>=20 && pct(f.w,f.g)<=30) out.push(pick([`${x.name} loses. Lifetime win rate now hovering around ${pct(f.w,f.g+1)}%. Consistency is a virtue.`, `${x.name}, that's a loss. You're building quite the collection.`], seed)); });
+    // head-to-head milestone
+    const h = F.h2h.map(h=>({ ...h, r:h.r })).filter(h=>h.r.g>=3).map(h=>{ const xWon = won1 ? h.x : h.y, yLost = won1 ? h.y : h.x; const r = won1 ? h.r : { g:h.r.g, w:h.r.l, l:h.r.w }; return { boss:xWon.name, chump:yLost.name, w:r.w+1, g:r.g+1 }; }).sort((a,b)=> b.w/b.g - a.w/a.g)[0];
+    if(h && h.w/h.g>=0.75) out.push(`${h.boss} now leads ${h.chump} ${h.w}-${h.g-h.w} all time. ${h.chump}, have you considered a different sport?`);
+    if(!out.length) out.push(pick([`${wn} take it ${Math.max(game.score1,game.score2)}-${Math.min(game.score1,game.score2)}. ${ln}, there's always next round. There's always a next round.`, `${wn} win. ${ln} contributed, in the sense that they were present.`, `Points to ${wn}. ${ln} are reminded that participation is its own reward.`], seed));
+  }
+  return pick(out.slice(0,2), seed >>> 3);
+}
 /* ==================== END CORE ==================== */
 
 /* ================= STATE ================= */
@@ -669,6 +795,7 @@ let editingGameId = null, activeScoreGameId = null, scoreA = null;
 let pollTimer = null, channel = null, claimMatch = null;
 let hostCourts = null, hostRounds = null, newFormat = 'americano', boardMode = 'avg', currentTab = 'match';
 let scoredSeen = null, roundsDoneSeen = null, drawingRound = false;
+let histData = null, histLoadedFor = null;   // all-time games/players, cached per match for the banter lines
 
 const $ = id => document.getElementById(id);
 const esc = s => { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; };
@@ -755,6 +882,7 @@ async function refresh(){
     return;
   }
   state.match = m.data; state.players = p.data||[]; state.games = g.data||[]; state.meId = sess.playerId;
+  if(state.match.status!=='lobby' && histLoadedFor!==state.match.id) loadHistoryForBanter(state.match.id);
   if(!state.players.find(x=>x.id===state.meId)){ stopLive(); clearSession(); state={match:null,players:[],games:[],meId:null}; if(currentTab==='match') showView('home'); return; }
   detectFx();
   if(currentTab==='match') render();
@@ -1393,13 +1521,28 @@ async function saveScore(gameId){
     if(state.match.format==='mexicano') await drawNextRound();   // next round, or finish if it was the last
     else await SB.from('matches').update({status:'finished'}).eq('id', state.match.id);
   }
-  toast('Score saved', true);
+  const saved = state.games.find(g=>g.id===gameId);
+  const q = saved ? quipPost({ ...saved, score1:s1, score2:s2 }) : null;
+  if(q) quipToast(q); else toast('Score saved', true);
   tractor();
   refresh();
 }
+function quipToast(msg){ const t=$('toast'); t.textContent=msg; t.className='quip-toast'; t.style.display='block'; setTimeout(()=>t.style.display='none', 6000); }
 
 /* ================= HELPERS ================= */
 const pname = id => { const p = state.players.find(x=>x.id===id); return p ? p.name : '?'; };
+/* All-time history for the banter engine: one fetch per match, then in memory. */
+async function loadHistoryForBanter(matchId){
+  histLoadedFor = matchId;
+  try{
+    const d = await fetchAllTime();
+    histData = { games: d.games.filter(g=>g.match_id!==matchId && d.matches.some(m=>m.id===g.match_id)), players: d.players };
+  }catch(e){ histData = { games:[], players:[] }; }
+  if(currentTab==='match' && state.match && state.match.id===matchId) render();
+}
+const histOrEmpty = () => histData || { games:[], players:[] };
+function quipPre(g){ try{ return banterPre(g, state.players, histOrEmpty(), state.games); }catch(e){ return null; } }
+function quipPost(g){ try{ return banterPost(g, state.players, histOrEmpty(), state.games); }catch(e){ return null; } }
 const teamNames = t => t.map(pname).join(' & ');
 function hostId(){ return state.players.length ? state.players[0].id : null; }
 function lbHTML(rows){
@@ -1623,6 +1766,7 @@ function renderPlay(){
           : (activeScoreGameId===g.id ? `<div class="serves">${m.points_per_game} points · ${m.points_per_game/4} serves each</div>`
             : `<button class="btn small" style="margin-top:10px;" onclick="openScorer('${g.id}')">Enter score</button>
                <div class="serves">${m.points_per_game} points · ${m.points_per_game/4} serves each</div>`)}
+        ${(()=>{ const q = scored ? quipPost(g) : quipPre(g); return q ? `<div class="quip">${esc(q)}</div>` : ''; })()}
       </div>`;
     });
     // A round with fewer games than courts (odd player counts): say so, so nobody
@@ -1638,7 +1782,7 @@ function renderPlay(){
     if(active) html += scorerHTML(active);
     const nextRound = rounds[rIdx+1];
     if(nextRound){
-      html += `<div class="card nextup">Next round: ${nextRound.games.map(g=>`<b>${esc(teamNames(g.team1))}</b> v <b>${esc(teamNames(g.team2))}</b>`).join('<br>')}</div>`;
+      html += `<div class="card nextup">Next round:<br>${nextRound.games.map(g=>{ const q=quipPre(g); return `<b>${esc(teamNames(g.team1))}</b> v <b>${esc(teamNames(g.team2))}</b>${q?`<div class="quip">${esc(q)}</div>`:''}`; }).join('')}</div>`;
     } else if(mexicano && rIdx+1 < totalRounds){
       html += `<div class="card nextup">Next round is drawn from the standings once all ${currentRound.games.length>1?'scores are':'the score is'} in · ${totalRounds-rIdx-1} round${totalRounds-rIdx-1===1?'':'s'} to go</div>`;
     }
@@ -1672,6 +1816,13 @@ function renderFinal(){
   const winners = rows.filter(r=>r.pts===top.pts);
   $('final-winner').textContent = winners.map(w=>w.name).join(' & ');
   $('final-winner-pts').textContent = (winners.length>1?'Joint winners with ':'Wins with ')+top.pts+' points';
+  const last = rows[rows.length-1], seed = hashStr(state.match.id+'final');
+  const gap = rows.length>1 ? top.pts - rows[1].pts : 0;
+  const closer = winners.length===1 ? pick([
+    gap>=15 ? `${top.name} won by ${gap}. The rest of you were scenery.` : gap<=2 ? `${top.name} wins by ${gap}. ${rows[1].name} will be awake at 3am thinking about one point.` : `${top.name} takes the night. ${rows[1].name} was second, which is first among the losers.`,
+    last && last.id!==top.id ? `${last.name} finished last with ${last.pts}. The squirrel has kept your balls as compensation.` : `${top.name} wins. Insufferable until next Monday.`,
+  ], seed) : `Shared. Nobody could be bothered to win it outright.`;
+  $('final-winner-pts').textContent += ' · ' + closer;
   $('final-lb').innerHTML = lbHTML(rows);
   // fat-finger insurance: scores stay editable after the final whistle
   $('final-games').innerHTML = state.games.map(g=>gameLine(g,true)).join('');
