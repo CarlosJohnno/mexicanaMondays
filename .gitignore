@@ -11,3 +11,7 @@ Thumbs.db
 .env*
 *service_role*
 *secret*
+
+# test scratch
+node_modules/
+tools/shots/
